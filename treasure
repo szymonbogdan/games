@@ -1,0 +1,181 @@
+# ======================= MAPA SKARBÓW =========================
+# Konfig - dzieci mogą to zmieniać
+$Config = [pscustomobject]@{
+    Cols        = 8        # szerokość (A..H)
+    Rows        = 8        # wysokość (1..8)
+    MaxTurns    = 20       # maksymalna liczba prób na gracza
+    ShowBoard   = $true    # rysować planszę po każdej turze
+    Colors      = [pscustomobject]@{
+        Title   = "Cyan"
+        Info    = "White"
+        Prompt  = "Yellow"
+        Good    = "Green"
+        Bad     = "Red"
+        Hint    = "Magenta"
+        Board   = "Gray"
+    }
+}
+
+# ---- WPROWADZENIE GRACZY ----
+Clear-Host
+Write-Host "=== MAPA SKARBÓW ===" -ForegroundColor $Config.Colors.Title
+Write-Host "Wpisz imiona graczy oddzielone przecinkami (Enter = gra solo)" -ForegroundColor $Config.Colors.Info
+Write-Host -NoNewline "> "
+$raw = Read-Host
+if ([string]::IsNullOrWhiteSpace($raw)) { $Players = @("Gracz") } else { $Players = $raw -split "\s*,\s*" }
+$Scores = @{}; foreach ($p in $Players) { $Scores[$p] = 0 }
+
+# ---- NARZĘDZIA ----
+$rand = [Random]::new()
+
+function Label-FromCol([int]$c) { [char]([int][char]'A' + $c) }     # 0->A, 1->B...
+function Col-FromLabel([string]$L) {
+    if ($L.Length -ne 1) { return $null }
+    $u = $L.ToUpper()[0]
+    $c = [int]$u - [int][char]'A'
+    if ($c -lt 0 -or $c -ge $Config.Cols) { return $null }
+    return $c
+}
+
+function Parse-Coord([string]$coord) {
+    if (-not $coord) { return $null }
+    $coord = $coord.Trim().ToUpper()
+    if ($coord -notmatch '^[A-Z]\d+$') { return $null }
+    $c = Col-FromLabel $coord.Substring(0,1)
+    $r = [int]$coord.Substring(1) - 1
+    if ($null -eq $c -or $r -lt 0 -or $r -ge $Config.Rows) { return $null }
+    return @{ C=$c; R=$r }
+}
+
+function Manhattan([hashtable]$a,[hashtable]$b) { [math]::Abs($a.C - $b.C) + [math]::Abs($a.R - $b.R) }
+
+function Dir-Arrow([hashtable]$from,[hashtable]$to) {
+    $dc = $to.C - $from.C
+    $dr = $to.R - $from.R
+    # Wiersze rosną w dół, więc "mniej R" to ↑
+    $v = if ($dr -lt 0) { "↑" } elseif ($dr -gt 0) { "↓" } else { "" }
+    $h = if ($dc -lt 0) { "←" } elseif ($dc -gt 0) { "→" } else { "" }
+    switch ($v+$h) {
+        "↑←" { "↖" } "↑→" { "↗" } "↓←" { "↙" } "↓→" { "↘" }
+        "↑"  { "↑" } "↓"  { "↓" } "←"  { "←" } "→"  { "→" }
+        default { "✓" } # trafiony
+    }
+}
+
+function Draw-Board($guesses, $target = $null) {
+    if (-not $Config.ShowBoard) { return }
+    Write-Host ""
+    # Nagłówek kolumn
+    Write-Host -NoNewline "   " -ForegroundColor $Config.Colors.Board
+    for ($c=0; $c -lt $Config.Cols; $c++) {
+        $lab = Label-FromCol $c
+        Write-Host -NoNewline (" {0,2} " -f $lab) -ForegroundColor $Config.Colors.Board
+    }
+    Write-Host ""
+
+    # Górna ramka
+    Write-Host -NoNewline "   " -ForegroundColor $Config.Colors.Board
+    for ($c=0; $c -lt $Config.Cols; $c++) { Write-Host -NoNewline "┌───" -ForegroundColor $Config.Colors.Board }
+    Write-Host "┐" -ForegroundColor $Config.Colors.Board
+
+    # Wiersze
+    for ($r=0; $r -lt $Config.Rows; $r++) {
+        Write-Host -NoNewline ("{0,2} " -f ($r+1)) -ForegroundColor $Config.Colors.Board
+        for ($c=0; $c -lt $Config.Cols; $c++) {
+            $mark = " "
+            $hit = $false
+            foreach ($g in $guesses) {
+                if ($g.R -eq $r -and $g.C -eq $c) {
+                    $mark = if ($g.Hit) { "★" } else { "·" }
+                    $hit = $g.Hit
+                }
+            }
+            $color = if ($hit) { $Config.Colors.Good } else { $Config.Colors.Board }
+            Write-Host -NoNewline "│ " -ForegroundColor $Config.Colors.Board
+            Write-Host -NoNewline $mark -ForegroundColor $color
+            Write-Host -NoNewline " " -ForegroundColor $Config.Colors.Board
+        }
+        Write-Host "│" -ForegroundColor $Config.Colors.Board
+
+        Write-Host -NoNewline "   " -ForegroundColor $Config.Colors.Board
+        for ($c=0; $c -lt $Config.Cols; $c++) { Write-Host -NoNewline "├───" -ForegroundColor $Config.Colors.Board }
+        Write-Host "┤" -ForegroundColor $Config.Colors.Board
+    }
+
+    # Dolna ramka
+    Write-Host -NoNewline "   " -ForegroundColor $Config.Colors.Board
+    for ($c=0; $c -lt $Config.Cols; $c++) { Write-Host -NoNewline "└───" -ForegroundColor $Config.Colors.Board }
+    Write-Host "┘" -ForegroundColor $Config.Colors.Board
+    Write-Host ""
+}
+
+# ---- ROZGRYWKA ----
+foreach ($player in $Players) {
+    # Wylosuj skarb dla danego gracza
+    $target = @{ C = $rand.Next(0,$Config.Cols); R = $rand.Next(0,$Config.Rows) }
+    $guesses = New-Object System.Collections.ArrayList
+    $lastDist = $null
+    Clear-Host
+    Write-Host ("=== Tura: {0} ===" -f $player) -ForegroundColor $Config.Colors.Title
+    Write-Host ("Plansza: {0} kolumn (A..{1}), {2} wierszy (1..{3})" -f $Config.Cols, (Label-FromCol ($Config.Cols-1)), $Config.Rows, $Config.Rows) -ForegroundColor $Config.Colors.Info
+    Write-Host ("Masz {0} prób. Wpisuj współrzędne, np. B4. 'Q' kończy." -f $Config.MaxTurns) -ForegroundColor $Config.Colors.Info
+
+    for ($t=1; $t -le $Config.MaxTurns; $t++) {
+        Draw-Board $guesses
+        Write-Host ("[{0}/{1}] Gdzie jest skarb?" -f $t, $Config.MaxTurns) -ForegroundColor $Config.Colors.Prompt
+        Write-Host -NoNewline "> "
+        $in = Read-Host
+        if ([string]::IsNullOrWhiteSpace($in)) { $t--; continue }
+        if ($in.Trim().ToUpper() -eq "Q") { Write-Host "Przerwano turę." -ForegroundColor $Config.Colors.Info; break }
+
+        $p = Parse-Coord $in
+        if ($null -eq $p) {
+            Write-Host "Nieprawidłowe współrzędne. Użyj formatu np. A1, C7." -ForegroundColor $Config.Colors.Bad
+            Start-Sleep -Milliseconds 800
+            $t--; continue
+        }
+
+        $hit = ($p.C -eq $target.C -and $p.R -eq $target.R)
+        $dist = Manhattan $p $target
+        $arrow = Dir-Arrow $p $target
+
+        $null = $guesses.Add([pscustomobject]@{ C=$p.C; R=$p.R; Hit=$hit })
+
+        if ($hit) {
+            Draw-Board $guesses
+            Write-Host "★ Trafiony skarb! Brawo!" -ForegroundColor $Config.Colors.Good
+            # Im mniej prób, tym więcej punktów (np. bonus za szybkie znalezienie)
+            $gain = [math]::Max(1, 6 - [math]::Floor(($t-1)/3))  # 5..1
+            $Scores[$player] += $gain
+            Write-Host ("Zdobywasz {0} pkt" -f $gain) -ForegroundColor $Config.Colors.Good
+            Start-Sleep -Milliseconds 1200
+            break
+        } else {
+            $trend = ""
+            if ($lastDist -ne $null) {
+                if ($dist -lt $lastDist) { $trend = " (cieplej)" }
+                elseif ($dist -gt $lastDist) { $trend = " (zimniej)" }
+                else { $trend = " (tak samo)" }
+            }
+            $lastDist = $dist
+            Write-Host ("{0}  Odległość: {1}{2}" -f $arrow, $dist, $trend) -ForegroundColor $Config.Colors.Hint
+            Start-Sleep -Milliseconds 800
+        }
+    }
+}
+
+# ---- WYNIKI ----
+Clear-Host
+Write-Host "=== WYNIKI ===" -ForegroundColor $Config.Colors.Title
+$sorted = $Scores.GetEnumerator() | Sort-Object Value -Descending
+foreach ($s in $sorted) {
+    Write-Host ("{0,-12}  Punkty: {1}" -f $s.Key, $s.Value) -ForegroundColor $Config.Colors.Info
+}
+if ($Players.Count -gt 1) {
+    $winner = $sorted | Select-Object -First 1
+    Write-Host ""
+    Write-Host ("🏆 Wygrywa: {0} (Punkty: {1})" -f $winner.Key, $winner.Value) -ForegroundColor $Config.Colors.Good
+}
+Write-Host ""
+Write-Host "Tipy: zmień rozmiar planszy (Rows/Cols), ogranicz próby (MaxTurns), wyłącz/ włącz rysowanie (ShowBoard)." -ForegroundColor $Config.Colors.Info
+# ===================== KONIEC GRY ==============================
