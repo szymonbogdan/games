@@ -1,0 +1,162 @@
+# ==================== TABLICZKA MNOŻENIA (1..3 x 1..10) ====================
+# USTAWIENIA – możesz je zmienić przed grą:
+$Config = [pscustomobject]@{
+    MinA        = 1      # najmniejszy pierwszy czynnik
+    MaxA        = 3      # największy pierwszy czynnik (gra do 3)
+    MinB        = 1      # najmniejszy drugi czynnik
+    MaxB        = 10     # największy drugi czynnik (do 10)
+    Questions   = 15     # ile pytań na gracza
+    TimeLimitS  = 12     # limit czasu (sekundy); 0 = bez limitu (polecane dla ISE/VS Code)
+    Hints       = $true  # podpowiedź jako suma (np. 3×4 = 3+3+3+3)
+    BeepOnHit   = $true  # piknięcie przy dobrej odpowiedzi
+    BeepOnMiss  = $false # piknięcie przy złej odpowiedzi
+    Colors      = [pscustomobject]@{
+        Title   = "Cyan"
+        Prompt  = "Yellow"
+        Good    = "Green"
+        Bad     = "Red"
+        Info    = "White"
+    }
+}
+
+# -------------------- WPROWADZENIE GRACZY --------------------
+Clear-Host
+Write-Host "=== TABLICZKA MNOŻENIA: 1..3 × 1..10 ===" -ForegroundColor $Config.Colors.Title
+Write-Host "Wpisz imiona graczy oddzielone przecinkami, np.: Julia,Kuba (Enter = gra solo)" -ForegroundColor $Config.Colors.Info
+Write-Host -NoNewline "> "
+$rawPlayers = Read-Host
+$Players = @()
+if ([string]::IsNullOrWhiteSpace($rawPlayers)) {
+    $Players = @("Gracz")
+} else {
+    $Players = $rawPlayers -split "\s*,\s*" | Where-Object { $_.Trim() -ne "" }
+}
+$Scores = @{}
+$BestStreak = @{}
+foreach ($p in $Players) { $Scores[$p] = 0; $BestStreak[$p] = 0 }
+
+# -------------------- FUNKCJE POMOCNICZE --------------------
+$rand = [Random]::new()
+
+function Get-Question([int]$minA,[int]$maxA,[int]$minB,[int]$maxB) {
+    $a = $rand.Next($minA, $maxA+1)
+    $b = $rand.Next($minB, $maxB+1)
+    [pscustomobject]@{ A=$a; B=$b; Ans=$a*$b }
+}
+
+# Wejście kompatybilne z różnymi hostami:
+# - Jeśli brak "prawdziwej konsoli" lub TimeLimitS = 0 -> używa Read-Host (bez limitu)
+# - Jeśli jest prawdziwa konsola i TimeLimitS > 0 -> odczyt z czasem i obsługą Esc
+function Read-Answer([int]$timeoutS) {
+    # wykryj wsparcie dla konsoli
+    $supportsConsole = $true
+    try { $null = [Console]::KeyAvailable } catch { $supportsConsole = $false }
+
+    if (-not $supportsConsole -or $timeoutS -le 0) {
+        # prosty tryb zgodny z ISE/VS Code
+        $line = Read-Host
+        return [pscustomobject]@{ Input=$line; TimedOut=$false; Esc=$false; Mode="ReadHost" }
+    }
+
+    # tryb z limitem czasu w prawdziwej konsoli
+    $deadline = (Get-Date).AddSeconds($timeoutS)
+    $buf = ""
+    while ($true) {
+        if ((Get-Date) -ge $deadline) {
+            return [pscustomobject]@{ Input=$buf; TimedOut=$true; Esc=$false; Mode="ConsoleKey" }
+        }
+        if ([Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($true)
+            switch ($key.Key) {
+                "Escape"   { return [pscustomobject]@{ Input=$null; TimedOut=$false; Esc=$true;  Mode="ConsoleKey" } }
+                "Enter"    { Write-Host ""; return [pscustomobject]@{ Input=$buf; TimedOut=$false; Esc=$false; Mode="ConsoleKey" } }
+                "Backspace"{ if ($buf.Length -gt 0) { $buf = $buf.Substring(0,$buf.Length-1); Write-Host "`b `b" -NoNewline } }
+                default {
+                    if ($key.KeyChar -match '^-?\d$') {
+                        $buf += $key.KeyChar
+                        Write-Host $key.KeyChar -NoNewline
+                    }
+                }
+            }
+        } else {
+            Start-Sleep -Milliseconds 20
+        }
+    }
+}
+
+function Show-Hint($a,$b) {
+    if (-not $Config.Hints) { return }
+    $parts = @()
+    for ($i=1; $i -le $b; $i++) { $parts += $a }
+    $txt = ($parts -join "+")
+    Write-Host ("  Podpowiedź: {0}×{1} = {2}" -f $a,$b,$txt) -ForegroundColor $Config.Colors.Info
+}
+
+function Beep($good) {
+    try {
+        if ($good -and $Config.BeepOnHit)      { [Console]::Beep(1000,120) }
+        if (-not $good -and $Config.BeepOnMiss){ [Console]::Beep(300,180)  }
+    } catch {}
+}
+
+# -------------------- ROZGRYWKA --------------------
+foreach ($player in $Players) {
+    Clear-Host
+    Write-Host ("=== Kolej gracza: {0} ===" -f $player) -ForegroundColor $Config.Colors.Title
+    Write-Host ("Masz {0} pytań. Zakres: {1}..{2} × {3}..{4}" -f $Config.Questions,$Config.MinA,$Config.MaxA,$Config.MinB,$Config.MaxB) -ForegroundColor $Config.Colors.Info
+    if ($Config.TimeLimitS -gt 0) {
+        Write-Host ("Limit czasu: {0}s na pytanie. Naciśnij Esc, aby przerwać." -f $Config.TimeLimitS) -ForegroundColor $Config.Colors.Info
+    } else {
+        Write-Host "Brak limitu czasu. Wpisz odpowiedź i naciśnij Enter." -ForegroundColor $Config.Colors.Info
+    }
+    Write-Host ""
+
+    $streak = 0
+    for ($q=1; $q -le $Config.Questions; $q++) {
+        $task = Get-Question $Config.MinA $Config.MaxA $Config.MinB $Config.MaxB
+        Write-Host ("[{0}/{1}]  {2} × {3} = ?" -f $q,$Config.Questions,$task.A,$task.B) -ForegroundColor $Config.Colors.Prompt
+        Show-Hint $task.A $task.B
+
+        Write-Host -NoNewline "> "
+        $res = Read-Answer $Config.TimeLimitS
+        if ($res.Esc) { Write-Host "Przerwano turę." -ForegroundColor $Config.Colors.Info; break }
+
+        $ok = $false
+        if (-not $res.TimedOut -and ($res.Input -match '^-?\d+$')) {
+            $ok = ([int]$res.Input -eq $task.Ans)
+        }
+
+        if ($ok) {
+            $Scores[$player] += 1
+            $streak += 1
+            if ($streak -gt $BestStreak[$player]) { $BestStreak[$player] = $streak }
+            Write-Host ("  ✔ Dobrze! ({0} × {1} = {2})  +1 pkt   [Seria: {3}]" -f $task.A,$task.B,$task.Ans,$streak) -ForegroundColor $Config.Colors.Good
+            Beep $true
+        } else {
+            $streak = 0
+            if ($res.TimedOut) {
+                Write-Host ("  ✖ Czas minął. Poprawna odpowiedź: {0}" -f $task.Ans) -ForegroundColor $Config.Colors.Bad
+            } else {
+                Write-Host ("  ✖ Nie. {0} × {1} = {2}" -f $task.A,$task.B,$task.Ans) -ForegroundColor $Config.Colors.Bad
+            }
+            Beep $false
+        }
+        Start-Sleep -Milliseconds 500
+        Write-Host ""
+    }
+}
+
+# -------------------- PODSUMOWANIE --------------------
+Clear-Host
+Write-Host "=== WYNIKI ===" -ForegroundColor $Config.Colors.Title
+foreach ($p in $Players) {
+    Write-Host ("{0,-12}  Punkty: {1,2}   Najlepsza seria: {2}" -f $p,$Scores[$p],$BestStreak[$p]) -ForegroundColor $Config.Colors.Info
+}
+if ($Players.Count -gt 1) {
+    $winner = ($Scores.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 1).Key
+    Write-Host ""
+    Write-Host ("🏆 Wygrywa: {0}!" -f $winner) -ForegroundColor $Config.Colors.Good
+}
+Write-Host ""
+Write-Host "Dzięki za grę! Zmień parametry w sekcji USTAWIENIA i zagraj ponownie."
+# =================================================================
