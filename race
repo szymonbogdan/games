@@ -1,0 +1,65 @@
+# === Name Race ===
+# Tip: You can predefine names here instead of Read-Host, e.g.:
+$names = @("Paulina","Julia","Ola","Lena","Karolina","Nadia","Oliwia","Nina","Krzyś","Kuba Ulenberg","Zosia","Weronika","Martyna","Iwo","Zuzia","Amelia","Alan","Max","Gucio","Dawid","Antek","Kuba Bolin","Maciek")
+# Otherwise you'll be prompted.
+
+if (-not $names) {
+    $raw = Read-Host "Enter names separated by commas (e.g. Ala,Ola,Jan,Kuba)"
+    $names = $raw -split "\s*,\s*" | Where-Object { $_ -ne "" }
+}
+
+if ($names.Count -eq 0) { Write-Host "No names provided. Exiting."; return }
+
+# Settings
+$trackLength = 100         # how many steps to the finish
+$minStep = 0              # min movement per tick
+$maxStep = 3              # max movement per tick
+$tickMs = 250             # speed (milliseconds per tick)
+$colors = @("Yellow","Green","Cyan","Magenta","White","Black","Red")
+
+# Positions start at 0
+$pos = @{}
+$names | ForEach-Object { $pos[$_] = 0 }
+
+function Draw-Track {
+    Clear-Host
+    $finish = ("=" * $trackLength) + "|🏁"
+    Write-Host "  " $finish
+    foreach ($n in $names) {
+        $p = [Math]::Min($pos[$n], $trackLength)
+        $bar = ("·" * $p) + "🏃" + (" " * ($trackLength - $p))
+        $c = $colors[ [Math]::Abs($n.GetHashCode()) % $colors.Count ]
+        Write-Host ("{0,-12}" -f $n) -NoNewline
+        Write-Host " " -NoNewline
+        Write-Host $bar -ForegroundColor $c
+    }
+}
+
+$winner = $null
+$random = New-Object System.Random
+
+# 3...2...1... GO!
+for ($countdown = 10; $countdown -ge 1; $countdown--) {
+    Clear-Host
+    Write-Host "Race starts in $countdown..." -ForegroundColor Yellow
+    Start-Sleep -Milliseconds 600
+}
+Write-Host "GO!" -ForegroundColor Green
+Start-Sleep -Milliseconds 500
+
+while (-not $winner) {
+    foreach ($n in $names) {
+        $step = $random.Next($minStep, $maxStep + 1)
+        $pos[$n] += $step
+        if ($pos[$n] -ge $trackLength) { $winner = $n; break }
+    }
+    Draw-Track
+    Start-Sleep -Milliseconds $tickMs
+}
+
+# Final screen with confetti
+Draw-Track
+Write-Host ""
+Write-Host ("🎉 " * 8)
+Write-Host ("WINNER: {0}" -f $winner) -ForegroundColor Green -BackgroundColor Black
+Write-Host ("🎉 " * 8)
